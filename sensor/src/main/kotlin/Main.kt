@@ -1,79 +1,57 @@
 package com.ds.sensor
 
-import mu.KotlinLogging
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
+import com.ds.sensor.SensorType.Companion.random
+import com.github.ajalt.clikt.core.CliktCommand
+import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.arguments.convert
+import com.github.ajalt.clikt.parameters.options.convert
+import com.github.ajalt.clikt.parameters.options.default
+import com.github.ajalt.clikt.parameters.options.option
+import com.github.ajalt.clikt.parameters.types.long
+import isIpAddress
+import kotlinx.coroutines.runBlocking
+import java.net.InetSocketAddress
+import java.util.*
 
-class EchoServer : Thread() {
+class Sensor : CliktCommand() {
+    private val uuid by option(help = "Sensor ID").default(UUID.randomUUID().toString())
 
-    private val socket: DatagramSocket = DatagramSocket(4445)
-    var running: Boolean = false
-    private var buf = ByteArray(256)
-
-    override fun run() {
-        running = true
-
-        while (running) {
-            var packet = DatagramPacket(buf, buf.size)
-            socket.receive(packet)
-
-            val address = packet.address
-            val port = packet.port
-            packet = DatagramPacket(buf, buf.size, address, port)
-            val length = packet.data.indexOfFirst { it == 0.toByte() }
-            val received = String(packet.data, packet.offset, if (length == -1) packet.length else length)
-
-            logger.info { "Received: $received -- ${received.length}" }
-
-            if (received.matches("end".toRegex())) {
-                running = false
-                continue
+    private val type by option(help = SensorType.values().joinToString(", "))
+        .convert("SensorType") {
+            try {
+                SensorType.getByName(it)
+            } catch (e: IllegalArgumentException) {
+                fail("Unknown Sensor type '$it' \nAvailable types: ${SensorType.values().joinToString(", ")}")
             }
-            socket.send(packet)
-            buf = ByteArray(256)
         }
-        logger.info { "Close socket" }
-        socket.close()
+        .default(random())
+
+    private val rate by option(help = "Rate at which sensor should send data (ms)").long().default(100)
+
+    private val station by argument("station", help = "Weather station server (host:port)")
+        .convert {
+            val entry = it.split(":")
+            if (entry.size == 2) {
+                try {
+                    require(entry.first().isIpAddress()) { "Invalid IP Address" }
+
+                    InetSocketAddress.createUnresolved(entry.first(), entry.last().toInt())
+                } catch (e: NumberFormatException) {
+                    fail("Invalid port: ${entry.last()}")
+                } catch (e: java.lang.IllegalArgumentException) {
+                    fail("port must be between 0 and 65535")
+                }
+            } else {
+                fail("Should be in format of host:port")
+            }
+        }
+
+    override fun run() = runBlocking {
+        val sensor = WeatherSensor.make(type, id = uuid)
+        val server = WeatherServer(sensor, rate, station)
+
+        server.start()
     }
 }
 
-class EchoClient {
-    private val socket: DatagramSocket = DatagramSocket()
-    private val address: InetAddress = InetAddress.getByName("localhost")
-
-    private var buf: ByteArray? = null
-
-    fun sendEcho(msg: String): String {
-        buf = msg.toByteArray()
-        var packet = DatagramPacket(buf!!, buf!!.size, address, 4445)
-        socket.send(packet)
-        packet = DatagramPacket(buf!!, buf!!.size)
-        socket.receive(packet)
-        return String(
-            packet.data, 0, packet.length
-        )
-    }
-
-    fun close() {
-        socket.close()
-    }
-}
-
-private val logger = KotlinLogging.logger {}
-
-fun main(args: Array<String>) {
-    val server = EchoServer()
-    server.start()
-    val client = EchoClient()
-
-    var echo = client.sendEcho("hello server")
-    logger.info { echo }
-    echo = client.sendEcho("server is working")
-    logger.info { echo }
-
-    echo = client.sendEcho("end")
-    logger.info { echo }
-    client.close()
-    logger.info { server.running }
-}
+fun main(args: Array<String>) = Sensor().main(args)

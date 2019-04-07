@@ -1,2 +1,4 @@
 rootProject.name = 'sensor'
 
+include ':network'
+project(':network').projectDir = file("../network")
